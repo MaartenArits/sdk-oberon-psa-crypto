@@ -19,6 +19,10 @@
 
 #include <stdlib.h>
 #include <string.h>
+/* Implemented by the TF-M built-in key loader; weak so other images that
+ * link this PSA core do not need it. */
+extern int tfm_platform_ram_key_usable(uint32_t key_id) __attribute__((weak));
+extern void tfm_platform_ram_key_evict(uint32_t key_id) __attribute__((weak));
 #include "mbedtls/platform.h"
 #if defined(MBEDTLS_THREADING_C)
 #include "mbedtls/threading.h"
@@ -790,6 +794,22 @@ psa_status_t psa_get_and_lock_key_slot(mbedtls_svc_key_id_t key,
      * thus no need to unlock the key slot here.
      */
     status = psa_get_and_lock_key_slot_in_memory(key, p_slot);
+
+#if defined(MBEDTLS_PSA_CRYPTO_BUILTIN_KEYS)
+    if (status == PSA_SUCCESS && tfm_platform_ram_key_usable != NULL &&
+        !tfm_platform_ram_key_usable(MBEDTLS_SVC_KEY_ID_GET_KEY_ID(key))) {
+        if (tfm_platform_ram_key_evict != NULL) {
+            tfm_platform_ram_key_evict(MBEDTLS_SVC_KEY_ID_GET_KEY_ID(key));
+        }
+        (void) psa_wipe_key_slot(*p_slot);
+        *p_slot = NULL;
+#if defined(MBEDTLS_THREADING_C)
+        (void) mbedtls_mutex_unlock(&mbedtls_threading_key_slot_mutex);
+#endif
+        return PSA_ERROR_DOES_NOT_EXIST;
+    }
+#endif
+
     if (status != PSA_ERROR_DOES_NOT_EXIST) {
 #if defined(MBEDTLS_THREADING_C)
         PSA_THREADING_CHK_RET(mbedtls_mutex_unlock(
